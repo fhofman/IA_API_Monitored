@@ -1,0 +1,62 @@
+services:
+  redis:
+    # Redis Stack: incluye RediSearch + RedisJSON (los necesita langgraph-checkpoint-redis).
+    image: redis/redis-stack-server:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"   # UI + colector OTLP HTTP (/v1/traces)
+    environment:
+      # Las versiones recientes exigen auth en /v1/traces (401). Entorno local: sin auth.
+      PHOENIX_ENABLE_AUTH: "false"
+      PHOENIX_WORKING_DIR: /mnt/data   # trazas persistentes entre reinicios
+    volumes:
+      - phoenix_data:/mnt/data
+    healthcheck:
+      # La imagen no trae curl: el chequeo usa el python de la propia imagen.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6006/healthz', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  api:
+    build: .
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.worker"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006
+    depends_on:
+      redis:
+        condition: service_healthy
+      phoenix:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  redis_data:
+  phoenix_data:
